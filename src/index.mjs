@@ -8,34 +8,116 @@ import mongoose from "mongoose";
 import connectDatabase from "./config/db.mjs";
 import productRoutes from "./routes/products.mjs";
 
+/*
+|--------------------------------------------------------------------------
+| DNS
+|--------------------------------------------------------------------------
+*/
+
 dns.setServers([
   "8.8.8.8",
   "1.1.1.1",
 ]);
+
+/*
+|--------------------------------------------------------------------------
+| App
+|--------------------------------------------------------------------------
+*/
 
 const app = express();
 
 const port =
   Number(process.env.PORT) || 5000;
 
-const clientOrigin =
-  process.env.CLIENT_ORIGIN ||
-  "http://localhost:3000";
-
 /*
 |--------------------------------------------------------------------------
 | CORS
+|--------------------------------------------------------------------------
+|
+| Render:
+|
+| CLIENT_ORIGIN=https://listing-tool-rose.vercel.app
+|
+| For local + production:
+|
+| CLIENT_ORIGIN=http://localhost:3000,https://listing-tool-rose.vercel.app
+|
+|--------------------------------------------------------------------------
+*/
+
+const allowedOrigins = (
+  process.env.CLIENT_ORIGIN ||
+  [
+    "http://localhost:3000",
+    "https://listing-tool-rose.vercel.app",
+  ].join(",")
+)
+  .split(",")
+  .map((origin) =>
+    origin.trim().replace(/\/$/, ""),
+  )
+  .filter(Boolean);
+
+console.log(
+  "Allowed CORS origins:",
+  allowedOrigins,
+);
+
+/*
+|--------------------------------------------------------------------------
+| CORS Middleware
 |--------------------------------------------------------------------------
 */
 
 app.use(
   cors({
-    origin: clientOrigin,
+    origin(origin, callback) {
+      /*
+      |--------------------------------------------------------------------------
+      | Requests like Postman/server-to-server may have no Origin.
+      |--------------------------------------------------------------------------
+      */
+
+      if (!origin) {
+        return callback(
+          null,
+          true,
+        );
+      }
+
+      const normalizedOrigin =
+        origin
+          .trim()
+          .replace(/\/$/, "");
+
+      if (
+        allowedOrigins.includes(
+          normalizedOrigin,
+        )
+      ) {
+        return callback(
+          null,
+          true,
+        );
+      }
+
+      console.error(
+        `CORS blocked origin: ${origin}`,
+      );
+
+      return callback(
+        new Error(
+          `CORS blocked origin: ${origin}`,
+        ),
+      );
+    },
 
     methods: [
       "GET",
       "POST",
       "PATCH",
+      "PUT",
       "DELETE",
       "OPTIONS",
     ],
@@ -44,6 +126,10 @@ app.use(
       "Content-Type",
       "Authorization",
     ],
+
+    credentials: false,
+
+    optionsSuccessStatus: 204,
   }),
 );
 
@@ -61,12 +147,16 @@ app.use(
 
 /*
 |--------------------------------------------------------------------------
-| Request logger
+| Request Logger
 |--------------------------------------------------------------------------
 */
 
 app.use(
-  (request, _response, next) => {
+  (
+    request,
+    _response,
+    next,
+  ) => {
     console.log(
       `[${new Date().toISOString()}] ${request.method} ${request.originalUrl}`,
     );
@@ -83,7 +173,10 @@ app.use(
 
 app.get(
   "/api/health",
-  (_request, response) => {
+  (
+    _request,
+    response,
+  ) => {
     response.json({
       success: true,
 
@@ -100,13 +193,15 @@ app.get(
 
       timestamp:
         new Date().toISOString(),
+
+      cors: allowedOrigins,
     });
   },
 );
 
 /*
 |--------------------------------------------------------------------------
-| Product routes
+| Products
 |--------------------------------------------------------------------------
 */
 
@@ -122,7 +217,10 @@ app.use(
 */
 
 app.use(
-  (request, response) => {
+  (
+    request,
+    response,
+  ) => {
     response
       .status(404)
       .json({
@@ -136,7 +234,7 @@ app.use(
 
 /*
 |--------------------------------------------------------------------------
-| Global error handler
+| Global Error Handler
 |--------------------------------------------------------------------------
 */
 
@@ -153,8 +251,32 @@ app.use(
     );
 
     /*
-     * Custom application errors
-     */
+    |--------------------------------------------------------------------------
+    | CORS
+    |--------------------------------------------------------------------------
+    */
+
+    if (
+      error.message?.startsWith(
+        "CORS blocked origin:",
+      )
+    ) {
+      return response
+        .status(403)
+        .json({
+          success: false,
+
+          message:
+            "This frontend origin is not allowed by the API.",
+        });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Custom Application Errors
+    |--------------------------------------------------------------------------
+    */
+
     if (error.status) {
       return response
         .status(error.status)
@@ -168,8 +290,11 @@ app.use(
     }
 
     /*
-     * Mongoose validation
-     */
+    |--------------------------------------------------------------------------
+    | Mongoose Validation
+    |--------------------------------------------------------------------------
+    */
+
     if (
       error.name ===
       "ValidationError"
@@ -185,8 +310,11 @@ app.use(
     }
 
     /*
-     * Invalid MongoDB ObjectId
-     */
+    |--------------------------------------------------------------------------
+    | Invalid ObjectId
+    |--------------------------------------------------------------------------
+    */
+
     if (
       error.name ===
       "CastError"
@@ -202,8 +330,11 @@ app.use(
     }
 
     /*
-     * Duplicate index
-     */
+    |--------------------------------------------------------------------------
+    | Duplicate MongoDB Key
+    |--------------------------------------------------------------------------
+    */
+
     if (
       error.code === 11000
     ) {
@@ -222,11 +353,16 @@ app.use(
     }
 
     /*
-     * MongoDB connection issue
-     */
+    |--------------------------------------------------------------------------
+    | MongoDB unavailable
+    |--------------------------------------------------------------------------
+    */
+
     if (
       error.name ===
-      "MongoServerSelectionError"
+        "MongoServerSelectionError" ||
+      error.name ===
+        "MongoNetworkError"
     ) {
       return response
         .status(503)
@@ -239,8 +375,11 @@ app.use(
     }
 
     /*
-     * Unknown error
-     */
+    |--------------------------------------------------------------------------
+    | Unknown Error
+    |--------------------------------------------------------------------------
+    */
+
     return response
       .status(500)
       .json({
@@ -264,19 +403,26 @@ async function startServer() {
 
     app.listen(
       port,
+      "0.0.0.0",
       () => {
         console.log("");
         console.log(
           "========================================",
         );
         console.log(
-          `API running: http://localhost:${port}`,
+          `API running on port ${port}`,
         );
         console.log(
-          `Products:    http://localhost:${port}/api/products`,
+          `Products: /api/products`,
         );
         console.log(
-          `Dashboard:   http://localhost:${port}/api/products/dashboard`,
+          `Dashboard: /api/products/dashboard`,
+        );
+        console.log(
+          "Allowed origins:",
+        );
+        console.log(
+          allowedOrigins,
         );
         console.log(
           "========================================",
@@ -298,7 +444,7 @@ startServer();
 
 /*
 |--------------------------------------------------------------------------
-| Graceful shutdown
+| Graceful Shutdown
 |--------------------------------------------------------------------------
 */
 
@@ -329,10 +475,16 @@ async function shutdown(
 
 process.on(
   "SIGINT",
-  () => void shutdown("SIGINT"),
+  () =>
+    void shutdown(
+      "SIGINT",
+    ),
 );
 
 process.on(
   "SIGTERM",
-  () => void shutdown("SIGTERM"),
+  () =>
+    void shutdown(
+      "SIGTERM",
+    ),
 );
