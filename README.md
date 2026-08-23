@@ -42,6 +42,26 @@ After deployment, use `https://your-render-service.onrender.com/api` as the API 
 | `GET` | `/api/health` | API and database status |
 | `GET` | `/api/products` | List products and variants |
 | `POST` | `/api/products` | Create a product or variant |
+| `POST` | `/api/products/:id/with-charm` | Clone a product as a with-charms variant |
 | `GET` | `/api/products/:id` | Get one product |
 | `PATCH` | `/api/products/:id` | Update a product or variant |
 | `DELETE` | `/api/products/:id` | Delete a product; deleting a parent also removes its variants |
+
+## Create a with-charms product
+
+Send a `POST` request to `/api/products/:id/with-charm`, where `:id` is the
+original product ID. The new product copies all fields (images, price, phone
+models, inventory details, and so on), is linked as a variant, and always uses
+the original product's Design Number.
+
+You may omit the body to use generated “With Charms” values, or send exact
+replacement values from the form. `title` is accepted as an alias for
+`productName`.
+
+```json
+{
+  "designName": "Aesthetic Pastel Floral With Charms",
+  "sku": "MC-AP-IP13-UVV-APF-WL-TRNSPT-WITH CHRM-117.1.V1",
+  "title": "Premium Crystal Clear Silicon Back Cover with Elegant Aesthetic Pastel Floral With Charms Print"
+}
+```

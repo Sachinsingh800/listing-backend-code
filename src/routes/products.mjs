@@ -70,6 +70,7 @@ const PRODUCT_FIELDS = [
 
   "parentId",
   "variantNumber",
+  "variantType",
 ];
 
 /*
@@ -273,6 +274,7 @@ function normalizeProductData(data) {
     "size",
     "printType",
     "finish",
+    "variantType",
   ];
 
   for (const field of trimFields) {
@@ -318,6 +320,134 @@ function normalizeProductData(data) {
   }
 
   return normalized;
+}
+
+/*
+|--------------------------------------------------------------------------
+| With-charm product defaults
+|--------------------------------------------------------------------------
+|
+| A charm product is stored as a variant. It keeps the original product's
+| fields and Design Number, but needs a different design name, title, and
+| SKU. These helpers create sensible defaults when the frontend does not
+| provide its own values.
+|--------------------------------------------------------------------------
+*/
+
+function alreadyMentionsCharms(value) {
+  return /\bwith\s+charms?\b/i.test(
+    String(value || ""),
+  );
+}
+
+function withCharmDesignName(designName) {
+  const name =
+    String(designName || "").trim();
+
+  if (!name || alreadyMentionsCharms(name)) {
+    return name;
+  }
+
+  return `${name} With Charms`;
+}
+
+function withCharmProductName(productName) {
+  const title =
+    String(productName || "").trim();
+
+  if (!title || alreadyMentionsCharms(title)) {
+    return title;
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | Keep "Print" at the end when the original title has one:
+  |
+  | Aesthetic Floral Print
+  | Aesthetic Floral With Charms Print
+  |--------------------------------------------------------------------------
+  */
+
+  const printIndex =
+    title.toLowerCase().lastIndexOf(
+      " print",
+    );
+
+  if (printIndex >= 0) {
+    return `${
+      title.slice(
+        0,
+        printIndex,
+      )
+    } With Charms${
+      title.slice(printIndex)
+    }`;
+  }
+
+  return `${title} With Charms`;
+}
+
+function withCharmSku(sku) {
+  const originalSku =
+    String(sku || "")
+      .trim()
+      .toUpperCase();
+
+  if (!originalSku || /\bWITH[\s-]+CHRM(?:S)?\b/i.test(originalSku)) {
+    return originalSku;
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | Put the charm marker immediately before the ending design/version part.
+  |
+  | MC-AP-IP13-UVV-APF-WL-TRNSPT-117.1.V1
+  | MC-AP-IP13-UVV-APF-WL-TRNSPT-WITH CHRM-117.1.V1
+  |--------------------------------------------------------------------------
+  */
+
+  const versionMatch =
+    originalSku.match(
+      /-(\d+(?:\.\d+)*\.V\d+)$/i,
+    );
+
+  if (versionMatch?.index !== undefined) {
+    return `${
+      originalSku.slice(
+        0,
+        versionMatch.index,
+      )
+    }-WITH CHRM${
+      originalSku.slice(
+        versionMatch.index,
+      )
+    }`;
+  }
+
+  return `${originalSku}-WITH CHRM`;
+}
+
+async function nextVariantNumber(parentId) {
+  const latestVariant =
+    await Product.findOne({
+      parentId,
+    })
+      .sort({
+        variantNumber: -1,
+      })
+      .select("variantNumber")
+      .lean();
+
+  const latestNumber =
+    Number(
+      latestVariant?.variantNumber,
+    );
+
+  return Number.isInteger(
+    latestNumber,
+  ) && latestNumber >= 2
+    ? latestNumber + 1
+    : 2;
 }
 
 /*
@@ -1880,6 +2010,245 @@ router.post(
           field ===
           "sku"
         ) {
+          return next(
+            conflict(
+              "This SKU already exists in the database.",
+            ),
+          );
+        }
+      }
+
+      next(error);
+    }
+  },
+);
+
+/*
+|--------------------------------------------------------------------------
+| CREATE WITH-CHARM VARIANT
+|
+| POST /api/products/:id/with-charm
+|
+| Clones every product field from :id and creates a variant under the root
+| product. The Design Number is always inherited from that root product.
+|
+| Optional body fields:
+|
+| {
+|   "designName": "Aesthetic Pastel Floral With Charms",
+|   "sku": "MC-AP-IP13-UVV-APF-WL-TRNSPT-WITH CHRM-117.1.V1",
+|   "title": "Premium Crystal Clear Silicon Back Cover with Elegant Aesthetic Pastel Floral With Charms Print"
+| }
+|
+| `title` is accepted as a friendly alias for the database field
+| `productName`. Any other allowed product field can also be supplied when a
+| caller needs to adjust it, but parent/design-number values are always
+| controlled by the server.
+|--------------------------------------------------------------------------
+*/
+
+router.post(
+  "/:id/with-charm",
+  async (
+    request,
+    response,
+    next,
+  ) => {
+    if (
+      !validId(
+        request.params.id,
+      )
+    ) {
+      return response
+        .status(400)
+        .json({
+          success: false,
+          message:
+            "Invalid product ID.",
+        });
+    }
+
+    try {
+      const source =
+        await Product.findById(
+          request.params.id,
+        ).lean();
+
+      if (!source) {
+        throw notFound(
+          "Product not found.",
+        );
+      }
+
+      /*
+      |--------------------------------------------------------------------------
+      | A charm variant may be created from either the root product or one of
+      | its variants. In both cases, attach it to the root product so every
+      | related product keeps the same Design Number.
+      |--------------------------------------------------------------------------
+      */
+
+      const rootId =
+        source.parentId ||
+        source._id;
+
+      const root =
+        source.parentId
+          ? await Product.findById(
+              rootId,
+            ).lean()
+          : source;
+
+      if (!root) {
+        throw notFound(
+          "Parent product not found.",
+        );
+      }
+
+      const sourceData =
+        productData(
+          serializeProduct(source),
+        );
+
+      const overrides =
+        productData(
+          request.body,
+        );
+
+      /*
+      |--------------------------------------------------------------------------
+      | The product form calls this field "title". Keep productName as the
+      | stored API field, but make this endpoint convenient for the form.
+      |--------------------------------------------------------------------------
+      */
+
+      if (
+        Object.hasOwn(
+          request.body || {},
+          "title",
+        ) &&
+        !Object.hasOwn(
+          request.body || {},
+          "productName",
+        )
+      ) {
+        overrides.productName =
+          request.body.title;
+      }
+
+      let data =
+        normalizeProductData({
+          ...sourceData,
+          ...overrides,
+        });
+
+      if (
+        !Object.hasOwn(
+          request.body || {},
+          "designName",
+        )
+      ) {
+        data.designName =
+          withCharmDesignName(
+            source.designName,
+          );
+      }
+
+      if (
+        !Object.hasOwn(
+          request.body || {},
+          "sku",
+        )
+      ) {
+        data.sku =
+          withCharmSku(
+            source.sku,
+          );
+      }
+
+      if (
+        !Object.hasOwn(
+          request.body || {},
+          "productName",
+        ) &&
+        !Object.hasOwn(
+          request.body || {},
+          "title",
+        )
+      ) {
+        data.productName =
+          withCharmProductName(
+            source.productName,
+          );
+      }
+
+      /*
+      |--------------------------------------------------------------------------
+      | These properties define the relationship and cannot be overridden.
+      | The source version is deliberately preserved because the product is a
+      | charm edition, not a replacement for the original design version.
+      |--------------------------------------------------------------------------
+      */
+
+      data.parentId =
+        root._id;
+
+      data.designNumber =
+        root.designNumber;
+
+      data.variantNumber =
+        await nextVariantNumber(
+          root._id,
+        );
+
+      data.variantType =
+        "charm";
+
+      validateProductData(
+        data,
+        "With-charm product",
+      );
+
+      await ensureUniqueIdentifiers(
+        [data],
+        null,
+        {
+          checkDesignNumber:
+            false,
+        },
+      );
+
+      const product =
+        await Product.create(
+          data,
+        );
+
+      response
+        .status(201)
+        .json({
+          success: true,
+
+          message:
+            "With-charm product created successfully.",
+
+          product:
+            serializeProductWithMeta(
+              product,
+            ),
+        });
+    } catch (error) {
+      if (
+        error?.code ===
+        11000
+      ) {
+        const field =
+          Object.keys(
+            error.keyPattern ||
+              error.keyValue ||
+              {},
+          )[0];
+
+        if (field === "sku") {
           return next(
             conflict(
               "This SKU already exists in the database.",

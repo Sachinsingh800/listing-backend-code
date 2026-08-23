@@ -414,6 +414,26 @@ const productSchema = new mongoose.Schema(
       min: 2,
       default: undefined,
     },
+
+    /*
+    |--------------------------------------------------------------------------
+    | Variant Type
+    |
+    | Identifies special variants (such as with-charms products) so the
+    | frontend can display them in their own section for a design.
+    |--------------------------------------------------------------------------
+    */
+
+    variantType: {
+      type: String,
+      enum: [
+        "standard",
+        "charm",
+      ],
+      default: "standard",
+      trim: true,
+      lowercase: true,
+    },
   },
 
   {
