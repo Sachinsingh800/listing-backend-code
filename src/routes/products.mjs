@@ -1191,6 +1191,25 @@ router.get(
                     ],
                   },
                 },
+
+                value: {
+                  $sum: {
+                    $multiply: [
+                      {
+                        $ifNull: [
+                          "$inventory",
+                          0,
+                        ],
+                      },
+                      {
+                        $ifNull: [
+                          "$price",
+                          0,
+                        ],
+                      },
+                    ],
+                  },
+                },
               },
             },
 
@@ -1237,6 +1256,25 @@ router.get(
                     ],
                   },
                 },
+
+                value: {
+                  $sum: {
+                    $multiply: [
+                      {
+                        $ifNull: [
+                          "$inventory",
+                          0,
+                        ],
+                      },
+                      {
+                        $ifNull: [
+                          "$price",
+                          0,
+                        ],
+                      },
+                    ],
+                  },
+                },
               },
             },
 
@@ -1267,6 +1305,375 @@ router.get(
 
       const price =
         priceResult[0] || {};
+
+      /*
+      |--------------------------------------------------------------------------
+      | Extended catalog, model, charm and activity analytics
+      |--------------------------------------------------------------------------
+      */
+
+      const now =
+        Date.now();
+
+      const sevenDaysAgo =
+        new Date(
+          now -
+            7 *
+              24 *
+              60 *
+              60 *
+              1000,
+        );
+
+      const thirtyDaysAgo =
+        new Date(
+          now -
+            30 *
+              24 *
+              60 *
+              60 *
+              1000,
+        );
+
+      const [
+        totalCharms,
+        charmSourceIds,
+        parentIdsWithVariants,
+        phoneModels,
+        newProducts7Days,
+        newProducts30Days,
+        newCharms30Days,
+        priceIntelligenceRows,
+        topModelRows,
+        charmModelRows,
+        recentCharmCountRows,
+      ] =
+        await Promise.all([
+          Charm.countDocuments(),
+
+          Charm.distinct(
+            "sourceProductId",
+            {
+              sourceProductId: {
+                $exists: true,
+                $ne: null,
+              },
+            },
+          ),
+
+          Product.distinct(
+            "parentId",
+            {
+              parentId: {
+                $exists: true,
+                $ne: null,
+              },
+            },
+          ),
+
+          Product.distinct(
+            "models.model",
+            {
+              "models.model": {
+                $exists: true,
+                $nin: [
+                  "",
+                  null,
+                ],
+              },
+            },
+          ),
+
+          Product.countDocuments({
+            parentId: {
+              $exists: false,
+            },
+            createdAt: {
+              $gte: sevenDaysAgo,
+            },
+          }),
+
+          Product.countDocuments({
+            parentId: {
+              $exists: false,
+            },
+            createdAt: {
+              $gte: thirtyDaysAgo,
+            },
+          }),
+
+          Charm.countDocuments({
+            createdAt: {
+              $gte: thirtyDaysAgo,
+            },
+          }),
+
+          Product.aggregate([
+            {
+              $match: {
+                price: {
+                  $gt: 0,
+                },
+              },
+            },
+            {
+              $project: {
+                price: 1,
+                mrp: {
+                  $ifNull: [
+                    "$mrp",
+                    0,
+                  ],
+                },
+                discount: {
+                  $cond: [
+                    {
+                      $gt: [
+                        {
+                          $ifNull: [
+                            "$mrp",
+                            0,
+                          ],
+                        },
+                        0,
+                      ],
+                    },
+                    {
+                      $multiply: [
+                        {
+                          $divide: [
+                            {
+                              $subtract: [
+                                {
+                                  $ifNull: [
+                                    "$mrp",
+                                    0,
+                                  ],
+                                },
+                                "$price",
+                              ],
+                            },
+                            {
+                              $ifNull: [
+                                "$mrp",
+                                1,
+                              ],
+                            },
+                          ],
+                        },
+                        100,
+                      ],
+                    },
+                    0,
+                  ],
+                },
+              },
+            },
+            {
+              $group: {
+                _id: null,
+                averageMrp: {
+                  $avg: "$mrp",
+                },
+                averageDiscount: {
+                  $avg: "$discount",
+                },
+              },
+            },
+          ]),
+
+          Product.aggregate([
+            {
+              $unwind: "$models",
+            },
+            {
+              $match: {
+                "models.model": {
+                  $exists: true,
+                  $nin: [
+                    "",
+                    null,
+                  ],
+                },
+              },
+            },
+            {
+              $group: {
+                _id: "$models.model",
+                records: {
+                  $sum: 1,
+                },
+                parents: {
+                  $sum: {
+                    $cond: [
+                      {
+                        $eq: [
+                          {
+                            $ifNull: [
+                              "$parentId",
+                              null,
+                            ],
+                          },
+                          null,
+                        ],
+                      },
+                      1,
+                      0,
+                    ],
+                  },
+                },
+                variants: {
+                  $sum: {
+                    $cond: [
+                      {
+                        $ne: [
+                          {
+                            $ifNull: [
+                              "$parentId",
+                              null,
+                            ],
+                          },
+                          null,
+                        ],
+                      },
+                      1,
+                      0,
+                    ],
+                  },
+                },
+                inventory: {
+                  $sum: {
+                    $ifNull: [
+                      "$inventory",
+                      0,
+                    ],
+                  },
+                },
+                value: {
+                  $sum: {
+                    $multiply: [
+                      {
+                        $ifNull: [
+                          "$inventory",
+                          0,
+                        ],
+                      },
+                      {
+                        $ifNull: [
+                          "$price",
+                          0,
+                        ],
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+            {
+              $sort: {
+                records: -1,
+                inventory: -1,
+              },
+            },
+            {
+              $limit: 8,
+            },
+          ]),
+
+          Charm.aggregate([
+            {
+              $unwind: "$models",
+            },
+            {
+              $match: {
+                "models.model": {
+                  $exists: true,
+                  $nin: [
+                    "",
+                    null,
+                  ],
+                },
+              },
+            },
+            {
+              $group: {
+                _id: "$models.model",
+                charms: {
+                  $sum: 1,
+                },
+              },
+            },
+          ]),
+
+          recentProducts.length
+            ? Charm.aggregate([
+                {
+                  $match: {
+                    sourceProductId: {
+                      $in: recentProducts.map(
+                        (product) =>
+                          product._id,
+                      ),
+                    },
+                  },
+                },
+                {
+                  $group: {
+                    _id: "$sourceProductId",
+                    count: {
+                      $sum: 1,
+                    },
+                  },
+                },
+              ])
+            : [],
+        ]);
+
+      const healthyStock =
+        Math.max(
+          totalRecords -
+            lowStock -
+            outOfStock,
+          0,
+        );
+
+      const charmProducts =
+        charmSourceIds.filter(
+          Boolean,
+        ).length;
+
+      const productsWithVariants =
+        parentIdsWithVariants.filter(
+          Boolean,
+        ).length;
+
+      const priceIntelligence =
+        priceIntelligenceRows[0] ||
+        {};
+
+      const charmCountByModel =
+        new Map(
+          charmModelRows.map(
+            (item) => [
+              String(item._id),
+              Number(
+                item.charms || 0,
+              ),
+            ],
+          ),
+        );
+
+      const recentCharmCountBySource =
+        new Map(
+          recentCharmCountRows.map(
+            (item) => [
+              item._id.toString(),
+              Number(
+                item.count || 0,
+              ),
+            ],
+          ),
+        );
 
       response.json({
         success: true,
@@ -1308,20 +1715,103 @@ router.get(
                 price.average ||
                   0,
               ),
+
+            averageMrp:
+              Number(
+                priceIntelligence
+                  .averageMrp ||
+                  0,
+              ),
+
+            averageDiscount:
+              Number(
+                priceIntelligence
+                  .averageDiscount ||
+                  0,
+              ),
           },
 
           lowStock,
 
           outOfStock,
 
-          healthyStock:
-            Math.max(
-              totalRecords -
-                lowStock -
-                outOfStock,
-              0,
-            ),
+          healthyStock,
+
+          stockHealthPercentage:
+            totalRecords > 0
+              ? Number(
+                  ((healthyStock / totalRecords) * 100).toFixed(1),
+                )
+              : 0,
+
+          averageInventory:
+            totalRecords > 0
+              ? Number(
+                  (Number(inventoryResult[0]?.total || 0) / totalRecords).toFixed(1),
+                )
+              : 0,
+
+          productsWithVariants,
+
+          productsWithoutVariants:
+            Math.max(totalProducts - productsWithVariants, 0),
+
+          variantCoveragePercentage:
+            totalProducts > 0
+              ? Number(((productsWithVariants / totalProducts) * 100).toFixed(1))
+              : 0,
+
+          averageVariantsPerProduct:
+            totalProducts > 0
+              ? Number((totalVariants / totalProducts).toFixed(1))
+              : 0,
+
+          totalCharms,
+
+          charmProducts,
+
+          productsWithoutCharms:
+            Math.max(totalRecords - charmProducts, 0),
+
+          charmCoveragePercentage:
+            totalRecords > 0
+              ? Number(((charmProducts / totalRecords) * 100).toFixed(1))
+              : 0,
+
+          averageCharmsPerProduct:
+            charmProducts > 0
+              ? Number((totalCharms / charmProducts).toFixed(1))
+              : 0,
+
+          modelCount:
+            phoneModels.filter(Boolean).length,
+
+          categoryCount:
+            categories.length,
+
+          brandCount:
+            brands.length,
+
+          newProducts7Days,
+
+          newProducts30Days,
+
+          newCharms30Days,
         },
+
+        topModels:
+          topModelRows.map(
+            (item) => ({
+              name: item._id,
+              records: Number(item.records || 0),
+              parents: Number(item.parents || 0),
+              variants: Number(item.variants || 0),
+              inventory: Number(item.inventory || 0),
+              value: Number(item.value || 0),
+              charms:
+                charmCountByModel.get(String(item._id)) || 0,
+            }),
+          ),
 
         categories:
           categories.map(
@@ -1334,6 +1824,9 @@ router.get(
 
               stock:
                 item.stock,
+
+              value:
+                Number(item.value || 0),
             }),
           ),
 
@@ -1348,13 +1841,20 @@ router.get(
 
               stock:
                 item.stock,
+
+              value:
+                Number(item.value || 0),
             }),
           ),
 
         recentProducts:
-          recentProducts.map(
-            serializeProductWithMeta,
-          ),
+          recentProducts.map((product) => ({
+            ...serializeProductWithMeta(product),
+            charmCount:
+              recentCharmCountBySource.get(
+                product._id.toString(),
+              ) || 0,
+          })),
       });
     } catch (error) {
       next(error);
