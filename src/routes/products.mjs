@@ -3295,6 +3295,58 @@ router.get(
 
       /*
       |--------------------------------------------------------------------------
+      | Charm counts by exact source product
+      |
+      | Charm records live in their own collection. Counting by sourceProductId
+      | lets the catalog show which parent or variant generated each charm
+      | without modifying Product documents or issuing one query per row.
+      |--------------------------------------------------------------------------
+      */
+
+      const catalogProductIds = [
+        ...rawProducts.map(
+          (product) =>
+            product._id,
+        ),
+        ...variants.map(
+          (variant) =>
+            variant._id,
+        ),
+      ];
+
+      const charmCountRows =
+        catalogProductIds.length
+          ? await Charm.aggregate([
+              {
+                $match: {
+                  sourceProductId: {
+                    $in: catalogProductIds,
+                  },
+                },
+              },
+              {
+                $group: {
+                  _id: "$sourceProductId",
+                  count: {
+                    $sum: 1,
+                  },
+                },
+              },
+            ])
+          : [];
+
+      const charmCountBySource =
+        new Map(
+          charmCountRows.map(
+            (item) => [
+              item._id.toString(),
+              Number(item.count || 0),
+            ],
+          ),
+        );
+
+      /*
+      |--------------------------------------------------------------------------
       | Group variants
       |--------------------------------------------------------------------------
       */
@@ -3320,27 +3372,60 @@ router.get(
           );
         }
 
+        const charmCount =
+          charmCountBySource.get(
+            variant._id.toString(),
+          ) || 0;
+
         variantsByParent
           .get(key)
-          .push(
-            serializeProductWithMeta(
+          .push({
+            ...serializeProductWithMeta(
               variant,
             ),
-          );
+            charmCount,
+            relatedCharmCount:
+              charmCount,
+          });
       }
 
       const products =
         rawProducts.map(
-          (product) => ({
-            ...serializeProductWithMeta(
-              product,
-            ),
+          (product) => {
+            const productId =
+              product._id.toString();
 
-            variants:
+            const productVariants =
               variantsByParent.get(
-                product._id.toString(),
-              ) || [],
-          }),
+                productId,
+              ) || [];
+
+            const charmCount =
+              charmCountBySource.get(
+                productId,
+              ) || 0;
+
+            const relatedCharmCount =
+              charmCount +
+              productVariants.reduce(
+                (total, variant) =>
+                  total +
+                  Number(
+                    variant.charmCount || 0,
+                  ),
+                0,
+              );
+
+            return {
+              ...serializeProductWithMeta(
+                product,
+              ),
+              charmCount,
+              relatedCharmCount,
+              variants:
+                productVariants,
+            };
+          },
         );
 
       response.json({
