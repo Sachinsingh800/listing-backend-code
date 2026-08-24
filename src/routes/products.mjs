@@ -2,6 +2,7 @@ import express from "express";
 import mongoose from "mongoose";
 
 import Product from "../models/Product.mjs";
+import Charm from "../models/Charm.mjs";
 
 const router = express.Router();
 
@@ -425,29 +426,6 @@ function withCharmSku(sku) {
   }
 
   return `${originalSku}-WITH CHRM`;
-}
-
-async function nextVariantNumber(parentId) {
-  const latestVariant =
-    await Product.findOne({
-      parentId,
-    })
-      .sort({
-        variantNumber: -1,
-      })
-      .select("variantNumber")
-      .lean();
-
-  const latestNumber =
-    Number(
-      latestVariant?.variantNumber,
-    );
-
-  return Number.isInteger(
-    latestNumber,
-  ) && latestNumber >= 2
-    ? latestNumber + 1
-    : 2;
 }
 
 /*
@@ -2025,238 +2003,203 @@ router.post(
 
 /*
 |--------------------------------------------------------------------------
-| CREATE WITH-CHARM VARIANT
+| CREATE SEPARATE CHARM RECORD
 |
-| POST /api/products/:id/with-charm
-|
-| Clones every product field from :id and creates a variant under the root
-| product. The Design Number is always inherited from that root product.
-|
-| Optional body fields:
-|
-| {
-|   "designName": "Aesthetic Pastel Floral With Charms",
-|   "sku": "MC-AP-IP13-UVV-APF-WL-TRNSPT-WITH CHRM-117.1.V1",
-|   "title": "Premium Crystal Clear Silicon Back Cover with Elegant Aesthetic Pastel Floral With Charms Print"
-| }
-|
-| `title` is accepted as a friendly alias for the database field
-| `productName`. Any other allowed product field can also be supplied when a
-| caller needs to adjust it, but parent/design-number values are always
-| controlled by the server.
+| This route is intentionally registered before the legacy handler below.
+| It copies the product into the independent `charms` collection and does
+| not write to the `products` collection.
 |--------------------------------------------------------------------------
 */
 
-router.post(
-  "/:id/with-charm",
-  async (
-    request,
-    response,
-    next,
-  ) => {
-    if (
-      !validId(
-        request.params.id,
-      )
-    ) {
-      return response
-        .status(400)
-        .json({
-          success: false,
-          message:
-            "Invalid product ID.",
-        });
+router.get(
+  "/:id/charms",
+  async (request, response, next) => {
+    if (!validId(request.params.id)) {
+      return response.status(400).json({
+        success: false,
+        message: "Invalid product ID.",
+      });
     }
 
     try {
-      const source =
-        await Product.findById(
-          request.params.id,
-        ).lean();
+      const product = await Product.findById(request.params.id)
+        .select("designNumber")
+        .lean();
 
-      if (!source) {
-        throw notFound(
-          "Product not found.",
-        );
+      if (!product) {
+        throw notFound("Product not found.");
       }
 
-      /*
-      |--------------------------------------------------------------------------
-      | A charm variant may be created from either the root product or one of
-      | its variants. In both cases, attach it to the root product so every
-      | related product keeps the same Design Number.
-      |--------------------------------------------------------------------------
-      */
+      const charms = await Charm.find({
+        designNumber: product.designNumber,
+      })
+        .sort({ createdAt: -1 })
+        .lean();
 
-      const rootId =
-        source.parentId ||
-        source._id;
+      response.json({
+        success: true,
+        designNumber: product.designNumber,
+        count: charms.length,
+        charms: charms.map(serializeProductWithMeta),
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
 
-      const root =
-        source.parentId
-          ? await Product.findById(
-              rootId,
-            ).lean()
-          : source;
+router.delete(
+  "/:id/charms/:charmId",
+  async (request, response, next) => {
+    if (!validId(request.params.id) || !validId(request.params.charmId)) {
+      return response.status(400).json({
+        success: false,
+        message: "Invalid product or charm ID.",
+      });
+    }
 
-      if (!root) {
-        throw notFound(
-          "Parent product not found.",
-        );
+    try {
+      const product = await Product.findById(request.params.id)
+        .select("designNumber")
+        .lean();
+
+      if (!product) {
+        throw notFound("Product not found.");
       }
 
-      const sourceData =
-        productData(
-          serializeProduct(source),
-        );
+      const charm = await Charm.findOneAndDelete({
+        _id: request.params.charmId,
+        designNumber: product.designNumber,
+      });
 
-      const overrides =
-        productData(
-          request.body,
-        );
-
-      /*
-      |--------------------------------------------------------------------------
-      | The product form calls this field "title". Keep productName as the
-      | stored API field, but make this endpoint convenient for the form.
-      |--------------------------------------------------------------------------
-      */
-
-      if (
-        Object.hasOwn(
-          request.body || {},
-          "title",
-        ) &&
-        !Object.hasOwn(
-          request.body || {},
-          "productName",
-        )
-      ) {
-        overrides.productName =
-          request.body.title;
+      if (!charm) {
+        throw notFound("Charm not found for this product design.");
       }
 
-      let data =
-        normalizeProductData({
-          ...sourceData,
-          ...overrides,
-        });
+      response.json({
+        success: true,
+        message: "Charm deleted. Product was not changed.",
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
 
-      if (
-        !Object.hasOwn(
-          request.body || {},
-          "designName",
-        )
-      ) {
-        data.designName =
-          withCharmDesignName(
-            source.designName,
-          );
+router.patch(
+  "/:id/charms/:charmId",
+  async (request, response, next) => {
+    if (!validId(request.params.id) || !validId(request.params.charmId)) {
+      return response.status(400).json({
+        success: false,
+        message: "Invalid product or charm ID.",
+      });
+    }
+
+    try {
+      const product = await Product.findById(request.params.id)
+        .select("designNumber")
+        .lean();
+
+      if (!product) {
+        throw notFound("Product not found.");
       }
 
-      if (
-        !Object.hasOwn(
-          request.body || {},
-          "sku",
-        )
-      ) {
-        data.sku =
-          withCharmSku(
-            source.sku,
-          );
-      }
+      const update = normalizeProductData(productData(request.body));
 
-      if (
-        !Object.hasOwn(
-          request.body || {},
-          "productName",
-        ) &&
-        !Object.hasOwn(
-          request.body || {},
-          "title",
-        )
-      ) {
-        data.productName =
-          withCharmProductName(
-            source.productName,
-          );
-      }
+      delete update.designNumber;
+      delete update.parentId;
+      delete update.variantNumber;
+      delete update.variantType;
 
-      /*
-      |--------------------------------------------------------------------------
-      | These properties define the relationship and cannot be overridden.
-      | The source version is deliberately preserved because the product is a
-      | charm edition, not a replacement for the original design version.
-      |--------------------------------------------------------------------------
-      */
-
-      data.parentId =
-        root._id;
-
-      data.designNumber =
-        root.designNumber;
-
-      data.variantNumber =
-        await nextVariantNumber(
-          root._id,
-        );
-
-      data.variantType =
-        "charm";
-
-      validateProductData(
-        data,
-        "With-charm product",
-      );
-
-      await ensureUniqueIdentifiers(
-        [data],
-        null,
+      const charm = await Charm.findOneAndUpdate(
         {
-          checkDesignNumber:
-            false,
+          _id: request.params.charmId,
+          designNumber: product.designNumber,
+        },
+        { $set: update },
+        {
+          new: true,
+          runValidators: true,
         },
       );
 
-      const product =
-        await Product.create(
-          data,
-        );
-
-      response
-        .status(201)
-        .json({
-          success: true,
-
-          message:
-            "With-charm product created successfully.",
-
-          product:
-            serializeProductWithMeta(
-              product,
-            ),
-        });
-    } catch (error) {
-      if (
-        error?.code ===
-        11000
-      ) {
-        const field =
-          Object.keys(
-            error.keyPattern ||
-              error.keyValue ||
-              {},
-          )[0];
-
-        if (field === "sku") {
-          return next(
-            conflict(
-              "This SKU already exists in the database.",
-            ),
-          );
-        }
+      if (!charm) {
+        throw notFound("Charm not found for this product design.");
       }
 
+      response.json({
+        success: true,
+        message: "Charm updated. Product was not changed.",
+        charm: serializeProductWithMeta(charm),
+      });
+    } catch (error) {
+      if (error?.code === 11000) {
+        return next(conflict("This charm SKU already exists."));
+      }
+
+      next(error);
+    }
+  },
+);
+
+router.post(
+  "/:id/with-charm",
+  async (request, response, next) => {
+    if (!validId(request.params.id)) {
+      return response.status(400).json({ success: false, message: "Invalid product ID." });
+    }
+
+    try {
+      const source = await Product.findById(request.params.id).lean();
+      if (!source) throw notFound("Product not found.");
+
+      const root = source.parentId
+        ? await Product.findById(source.parentId).lean()
+        : source;
+      if (!root) throw notFound("Parent product not found.");
+
+      const generatedData = {
+        ...productData(serializeProduct(source)),
+        designNumber: root.designNumber,
+        designName: withCharmDesignName(source.designName),
+        productName: withCharmProductName(source.productName),
+        sku: withCharmSku(source.sku),
+      };
+
+      const overrides = productData(request.body);
+
+      if (
+        Object.hasOwn(request.body || {}, "title") &&
+        !Object.hasOwn(request.body || {}, "productName")
+      ) {
+        overrides.productName = request.body.title;
+      }
+
+      const data = normalizeProductData({
+        ...generatedData,
+        ...overrides,
+        designNumber: root.designNumber,
+      });
+
+      delete data.parentId;
+      delete data.variantNumber;
+      delete data.variantType;
+      validateProductData(data, "Charm");
+
+      const charm = await Charm.create({
+        ...data,
+        sourceProductId: source._id,
+        sourceKind: source.parentId ? "variant" : "parent",
+        sourceVariantNumber: source.variantNumber,
+      });
+      response.status(201).json({
+        success: true,
+        message: "Charm saved in the separate charms collection. Product was not changed.",
+        charm: serializeProductWithMeta(charm),
+      });
+    } catch (error) {
+      if (error?.code === 11000) return next(conflict("This charm SKU already exists."));
       next(error);
     }
   },

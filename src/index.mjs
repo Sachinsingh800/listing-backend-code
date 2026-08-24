@@ -7,6 +7,7 @@ import mongoose from "mongoose";
 
 import connectDatabase from "./config/db.mjs";
 import productRoutes from "./routes/products.mjs";
+import charmRoutes from "./routes/charms.mjs";
 
 /*
 |--------------------------------------------------------------------------
@@ -208,6 +209,11 @@ app.get(
 app.use(
   "/api/products",
   productRoutes,
+);
+
+app.use(
+  "/api/charms",
+  charmRoutes,
 );
 
 /*

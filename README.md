@@ -42,7 +42,13 @@ After deployment, use `https://your-render-service.onrender.com/api` as the API 
 | `GET` | `/api/health` | API and database status |
 | `GET` | `/api/products` | List products and variants |
 | `POST` | `/api/products` | Create a product or variant |
-| `POST` | `/api/products/:id/with-charm` | Clone a product as a with-charms variant |
+| `POST` | `/api/products/:id/with-charm` | Copy a product into the separate charms collection |
+| `GET` | `/api/products/:id/charms` | List all charms sharing the product's Design Number |
+| `DELETE` | `/api/products/:id/charms/:charmId` | Delete a related charm without changing the product |
+| `PATCH` | `/api/products/:id/charms/:charmId` | Update editable charm fields without changing the product |
+| `GET` | `/api/charms?designNumber=317` | List separately stored charms for a design number |
+| `POST` | `/api/charms` | Create a charm directly in the separate charms collection |
+| `PATCH` / `DELETE` | `/api/charms/:id` | Update or delete a charm without touching products |
 | `GET` | `/api/products/:id` | Get one product |
 | `PATCH` | `/api/products/:id` | Update a product or variant |
 | `DELETE` | `/api/products/:id` | Delete a product; deleting a parent also removes its variants |
@@ -50,9 +56,16 @@ After deployment, use `https://your-render-service.onrender.com/api` as the API 
 ## Create a with-charms product
 
 Send a `POST` request to `/api/products/:id/with-charm`, where `:id` is the
-original product ID. The new product copies all fields (images, price, phone
-models, inventory details, and so on), is linked as a variant, and always uses
-the original product's Design Number.
+original product ID. The new charm copies all fields (images, price, phone
+models, inventory details, and so on), is saved in the separate MongoDB
+`charms` collection, and always uses the original product's Design Number.
+The original product is not updated and no Product variant is created.
+
+The charm page displays the parent and all of its variants. A charm can be
+generated from any individual row or from all missing rows at once. Generated
+drafts and stored charms use a horizontally scrollable editable table. The
+shared Design Number stays locked so every charm remains connected to the
+correct design; saving an edited charm never updates its source product.
 
 You may omit the body to use generated “With Charms” values, or send exact
 replacement values from the form. `title` is accepted as an alias for
