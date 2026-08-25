@@ -29,7 +29,7 @@ Add these Render environment variables:
 | Key | Value |
 | --- | --- |
 | `MONGODB_URI` | Your complete MongoDB Atlas connection string, with the real password |
-| `CLIENT_ORIGIN` | Your Vercel frontend URL, for example `https://your-app.vercel.app` |
+| `CLIENT_ORIGIN` | Not required. The API currently uses public wildcard CORS. |
 
 Render provides `PORT` automatically. Do not add a real `.env` file to Git.
 

@@ -34,106 +34,44 @@ const port =
 
 /*
 |--------------------------------------------------------------------------
-| CORS
+| Public CORS
 |--------------------------------------------------------------------------
 |
-| Render:
+| This API is intentionally public. The wildcard allows the production
+| Vercel domain, Vercel preview deployments, localhost, mobile apps, and
+| other websites to call the API without maintaining an origin allowlist.
 |
-| CLIENT_ORIGIN=https://listing-tool-rose.vercel.app
-|
-| For local + production:
-|
-| CLIENT_ORIGIN=http://localhost:3000,https://listing-tool-rose.vercel.app
-|
-|--------------------------------------------------------------------------
-*/
-
-const allowedOrigins = (
-  process.env.CLIENT_ORIGIN ||
-  [
-    "http://localhost:3000",
-    "https://listing-tool-rose.vercel.app",
-    "https://listing-tool-three.vercel.app",
-  ].join(",")
-)
-  .split(",")
-  .map((origin) =>
-    origin.trim().replace(/\/$/, ""),
-  )
-  .filter(Boolean);
-
-console.log(
-  "Allowed CORS origins:",
-  allowedOrigins,
-);
-
-/*
-|--------------------------------------------------------------------------
-| CORS Middleware
+| credentials must remain false when origin is "*".
+| Omitting allowedHeaders lets the CORS middleware reflect all headers
+| requested by the browser during preflight.
 |--------------------------------------------------------------------------
 */
+
+const corsOptions = {
+  origin: "*",
+
+  methods: [
+    "GET",
+    "POST",
+    "PATCH",
+    "PUT",
+    "DELETE",
+    "OPTIONS",
+  ],
+
+  credentials: false,
+
+  optionsSuccessStatus: 204,
+
+  maxAge: 86400,
+};
 
 app.use(
-  cors({
-    origin(origin, callback) {
-      /*
-      |--------------------------------------------------------------------------
-      | Requests like Postman/server-to-server may have no Origin.
-      |--------------------------------------------------------------------------
-      */
+  cors(corsOptions),
+);
 
-      if (!origin) {
-        return callback(
-          null,
-          true,
-        );
-      }
-
-      const normalizedOrigin =
-        origin
-          .trim()
-          .replace(/\/$/, "");
-
-      if (
-        allowedOrigins.includes(
-          normalizedOrigin,
-        )
-      ) {
-        return callback(
-          null,
-          true,
-        );
-      }
-
-      console.error(
-        `CORS blocked origin: ${origin}`,
-      );
-
-      return callback(
-        new Error(
-          `CORS blocked origin: ${origin}`,
-        ),
-      );
-    },
-
-    methods: [
-      "GET",
-      "POST",
-      "PATCH",
-      "PUT",
-      "DELETE",
-      "OPTIONS",
-    ],
-
-    allowedHeaders: [
-      "Content-Type",
-      "Authorization",
-    ],
-
-    credentials: false,
-
-    optionsSuccessStatus: 204,
-  }),
+console.log(
+  "CORS access: public (*)",
 );
 
 /*
@@ -197,7 +135,11 @@ app.get(
       timestamp:
         new Date().toISOString(),
 
-      cors: allowedOrigins,
+      cors: {
+        access: "public",
+        origin: "*",
+        credentials: false,
+      },
     });
   },
 );
@@ -262,27 +204,6 @@ app.use(
       "API ERROR:",
       error,
     );
-
-    /*
-    |--------------------------------------------------------------------------
-    | CORS
-    |--------------------------------------------------------------------------
-    */
-
-    if (
-      error.message?.startsWith(
-        "CORS blocked origin:",
-      )
-    ) {
-      return response
-        .status(403)
-        .json({
-          success: false,
-
-          message:
-            "This frontend origin is not allowed by the API.",
-        });
-    }
 
     /*
     |--------------------------------------------------------------------------
@@ -432,10 +353,7 @@ async function startServer() {
           `Dashboard: /api/products/dashboard`,
         );
         console.log(
-          "Allowed origins:",
-        );
-        console.log(
-          allowedOrigins,
+          "CORS: public (*)",
         );
         console.log(
           "========================================",
