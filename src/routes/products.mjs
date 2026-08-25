@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 
 import Product from "../models/Product.mjs";
 import Charm from "../models/Charm.mjs";
+import Design from "../models/Design.mjs";
 
 const router = express.Router();
 
@@ -54,6 +55,7 @@ const PRODUCT_FIELDS = [
   "designName",
   "designCode",
   "designNumber",
+  "designId",
   "sku",
 
   "printType",
@@ -193,6 +195,11 @@ function serializeProduct(product) {
       data.parentId.toString();
   }
 
+  if (data.designId) {
+    data.designId =
+      data.designId.toString();
+  }
+
   return {
     ...data,
     id,
@@ -320,7 +327,60 @@ function normalizeProductData(data) {
         .toUpperCase();
   }
 
+  if (
+    normalized.designId !==
+      undefined &&
+    normalized.designId !==
+      null
+  ) {
+    normalized.designId =
+      String(
+        normalized.designId,
+      ).trim();
+
+    if (!normalized.designId) {
+      delete normalized.designId;
+    }
+  }
+
   return normalized;
+}
+
+async function applyDesignReference(
+  data,
+  session = null,
+) {
+  if (!data.designId) {
+    return null;
+  }
+
+  if (!validId(data.designId)) {
+    throw badRequest(
+      "Invalid saved Design ID.",
+    );
+  }
+
+  let query =
+    Design.findById(data.designId)
+      .lean();
+
+  if (session) {
+    query = query.session(session);
+  }
+
+  const design = await query;
+
+  if (!design) {
+    throw badRequest(
+      "The selected saved Design no longer exists.",
+    );
+  }
+
+  data.designId = design._id;
+  data.designName = design.designName;
+  data.designCode = design.designCode;
+
+  return design;
 }
 
 /*
@@ -606,7 +666,10 @@ async function ensureUniqueParentProduct(
   |--------------------------------------------------------------------------
   */
 
-  if (data.designCode?.trim()) {
+  if (
+    data.designCode?.trim() &&
+    !data.designId
+  ) {
     const filter = {
       ...rootFilter,
 
@@ -968,12 +1031,11 @@ router.get(
         );
       }
 
-      const existing =
+      const existingProduct =
         await Product.exists({
           parentId: {
             $exists: false,
           },
-
           designNumber,
         });
 
@@ -983,7 +1045,7 @@ router.get(
         designNumber,
 
         available:
-          !existing,
+          !existingProduct,
       });
     } catch (error) {
       next(error);
@@ -2084,6 +2146,11 @@ router.post(
           ),
         );
 
+      await applyDesignReference(
+        parentData,
+        session,
+      );
+
       validateProductData(
         parentData,
         "Parent product",
@@ -2170,6 +2237,15 @@ router.post(
 
         variantData.designNumber =
           parentData.designNumber;
+
+        variantData.designId =
+          parentData.designId;
+
+        variantData.designName =
+          parentData.designName;
+
+        variantData.designCode =
+          parentData.designCode;
 
         preparedVariants.push(
           variantData,
@@ -2349,6 +2425,8 @@ router.post(
           ),
         );
 
+      await applyDesignReference(data);
+
       validateProductData(
         data,
       );
@@ -2390,7 +2468,7 @@ router.post(
             data.parentId,
           )
             .select(
-              "designNumber",
+              "designId designName designCode designNumber",
             )
             .lean();
 
@@ -2402,6 +2480,15 @@ router.post(
 
         data.designNumber =
           parent.designNumber;
+
+        data.designId =
+          parent.designId;
+
+        data.designName =
+          parent.designName;
+
+        data.designCode =
+          parent.designCode;
 
         await ensureUniqueIdentifiers(
           [data],
@@ -2758,6 +2845,12 @@ router.patch(
       */
 
       if (!current.parentId) {
+        data.designId =
+          data.designId ??
+          current.designId?.toString();
+
+        await applyDesignReference(data);
+
         await ensureUniqueParentProduct(
           {
             productName:
@@ -2767,6 +2860,10 @@ router.patch(
             designCode:
               data.designCode ??
               current.designCode,
+
+            designId:
+              data.designId ??
+              current.designId,
           },
           current._id,
         );
@@ -2799,7 +2896,7 @@ router.patch(
 
         if (
           nextDesignNumber !==
-          current.designNumber
+            current.designNumber
         ) {
           const designExists =
             await Product.exists({
@@ -2886,7 +2983,7 @@ router.patch(
             current.parentId,
           )
             .select(
-              "designNumber",
+              "designId designName designCode designNumber",
             )
             .lean();
 
@@ -2898,6 +2995,15 @@ router.patch(
 
         data.designNumber =
           parent.designNumber;
+
+        data.designId =
+          parent.designId;
+
+        data.designName =
+          parent.designName;
+
+        data.designCode =
+          parent.designCode;
 
         /*
         |--------------------------------------------------------------------------

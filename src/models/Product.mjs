@@ -255,6 +255,12 @@ const productSchema = new mongoose.Schema(
     |--------------------------------------------------------------------------
     */
 
+    designId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Design",
+      default: undefined,
+    },
+
     designName: {
       type: String,
       required: true,
@@ -491,44 +497,19 @@ productSchema.index({
   "models.model": 1,
 });
 
-
-/*
-|--------------------------------------------------------------------------
-| UNIQUE DESIGN NUMBER FOR PARENT PRODUCTS ONLY
-|--------------------------------------------------------------------------
-|
-| Parent:
-|
-|   317 ✅
-|
-| Variant of 317:
-|
-|   317 ✅
-|
-| Another parent:
-|
-|   317 ❌
-|
-|--------------------------------------------------------------------------
-*/
-
 productSchema.index(
   {
     designNumber: 1,
   },
   {
-    unique: true,
-
     name:
-      "unique_parent_design_number",
-
-    partialFilterExpression: {
-      parentId: {
-        $exists: false,
-      },
-    },
+      "product_design_number_lookup",
   },
 );
+
+productSchema.index({
+  designId: 1,
+});
 
 /*
 |--------------------------------------------------------------------------

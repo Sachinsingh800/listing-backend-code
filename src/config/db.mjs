@@ -1,5 +1,7 @@
 import mongoose from "mongoose";
 
+import { initializeDesignLibrary } from "../services/design-library.mjs";
+
 export default async function connectDatabase() {
   const uri = process.env.MONGODB_URI;
 
@@ -32,4 +34,6 @@ export default async function connectDatabase() {
     minPoolSize: 1,
     family: 4,
   });
+
+  await initializeDesignLibrary();
 }

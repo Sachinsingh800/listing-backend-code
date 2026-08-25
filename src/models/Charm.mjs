@@ -13,7 +13,6 @@ charmSchema.add({
     type: mongoose.Schema.Types.ObjectId,
     ref: "Product",
     default: undefined,
-    index: true,
   },
   sourceKind: {
     type: String,
