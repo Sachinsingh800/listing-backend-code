@@ -53,6 +53,7 @@ const allowedOrigins = (
   [
     "http://localhost:3000",
     "https://listing-tool-rose.vercel.app",
+    "https://listing-tool-three.vercel.app",
   ].join(",")
 )
   .split(",")
