@@ -1,9 +1,12 @@
 import dns from "node:dns";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import "dotenv/config";
 
 import cors from "cors";
 import express from "express";
 import mongoose from "mongoose";
+import multer from "multer";
 
 import connectDatabase from "./config/db.mjs";
 import productRoutes from "./routes/products.mjs";
@@ -28,6 +31,10 @@ dns.setServers([
 */
 
 const app = express();
+
+const currentDirectory = path.dirname(
+  fileURLToPath(import.meta.url),
+);
 
 const port =
   Number(process.env.PORT) || 5000;
@@ -84,6 +91,21 @@ app.use(
   express.json({
     limit: "2mb",
   }),
+);
+
+/*
+|--------------------------------------------------------------------------
+| Listing dashboard
+|--------------------------------------------------------------------------
+*/
+
+app.use(
+  express.static(
+    path.join(
+      currentDirectory,
+      "../public",
+    ),
+  ),
 );
 
 /*
@@ -220,6 +242,18 @@ app.use(
           message:
             error.message ||
             "Request failed.",
+        });
+    }
+
+    if (error instanceof multer.MulterError) {
+      return response
+        .status(400)
+        .json({
+          success: false,
+          message:
+            error.code === "LIMIT_FILE_SIZE"
+              ? "The spreadsheet must be 15 MB or smaller."
+              : "Invalid spreadsheet upload.",
         });
     }
 

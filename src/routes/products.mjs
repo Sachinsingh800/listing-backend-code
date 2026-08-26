@@ -1,11 +1,40 @@
 import express from "express";
 import mongoose from "mongoose";
+import multer from "multer";
+import * as XLSX from "xlsx";
 
 import Product from "../models/Product.mjs";
 import Charm from "../models/Charm.mjs";
 import Design from "../models/Design.mjs";
 
 const router = express.Router();
+
+/*
+|--------------------------------------------------------------------------
+| Spreadsheet upload
+|
+| The workbook stays in memory and is never written to the server.  This is
+| important because listing exports often contain thousands of product rows.
+|--------------------------------------------------------------------------
+*/
+
+const spreadsheetUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 15 * 1024 * 1024,
+    files: 1,
+  },
+  fileFilter(_request, file, callback) {
+    if (/\.(xlsx|xls|csv)$/i.test(file.originalname || "")) {
+      callback(null, true);
+      return;
+    }
+
+    callback(
+      badRequest("Upload an Excel (.xlsx or .xls) or CSV file."),
+    );
+  },
+});
 
 /*
 |--------------------------------------------------------------------------
@@ -2078,6 +2107,208 @@ router.get(
                 product.sku,
             }),
           ),
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+/*
+|--------------------------------------------------------------------------
+| EXCEL / CSV IMPORT
+|
+| Supports the current Meesho template as well as older exports: instead of
+| relying on a fixed sheet name or row number, it finds the row containing
+| the product-name column and maps fields by their visible labels.
+|--------------------------------------------------------------------------
+*/
+
+function cleanImportHeader(value) {
+  return String(value || "")
+    .replace(/\*/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function findImportColumn(headers, names) {
+  return headers.findIndex((header) => {
+    const normalized = cleanImportHeader(header);
+
+    return names.some((name) =>
+      normalized === name ||
+      normalized.startsWith(`${name} `),
+    );
+  });
+}
+
+function importCell(row, headers, names) {
+  const index = findImportColumn(headers, names);
+  const value = index >= 0 ? row[index] : "";
+
+  return value === undefined || value === null
+    ? ""
+    : String(value).trim();
+}
+
+function importNumber(row, headers, names, fallback = 0) {
+  const value = Number(importCell(row, headers, names));
+
+  return Number.isFinite(value) && value >= 0
+    ? value
+    : fallback;
+}
+
+function designNumberFromSku(sku, fallback) {
+  const match = String(sku || "").match(/-(\d+)(?:\.\d+)?\.V\d+$/i);
+
+  return match?.[1] || String(fallback);
+}
+
+function designCodeFromSku(sku, fallback) {
+  const value = String(sku || "").trim();
+
+  return value
+    .replace(/-\d+(?:\.\d+)?\.V\d+$/i, "")
+    .replace(/[^a-z0-9]+/gi, "-")
+    .replace(/^-|-$/g, "")
+    .slice(-80)
+    .toUpperCase() || `IMPORT-${fallback}`;
+}
+
+function mapImportRow(row, headers, rowNumber) {
+  const sku = importCell(row, headers, ["sku id", "sku", "seller sku id"]);
+  const styleId = importCell(row, headers, ["product id / style id", "style id", "product id"]);
+  const productName = importCell(row, headers, ["product name", "title"]);
+  const compatibleModels = importCell(row, headers, ["compatible models", "compatible model", "phone model"]);
+  const designNumber = designNumberFromSku(sku || styleId, rowNumber);
+  const designCode = designCodeFromSku(styleId || sku, rowNumber);
+
+  return normalizeProductData({
+    productName,
+    description: importCell(row, headers, ["product description", "description"]),
+    brand: importCell(row, headers, ["brand name", "brand"]),
+    category: "Mobile Cases & Covers",
+    material: importCell(row, headers, ["material"]),
+    color: importCell(row, headers, ["color"]),
+    theme: importCell(row, headers, ["theme"]),
+    type: importCell(row, headers, ["type"]),
+    price: importNumber(row, headers, ["meesho price", "price"]),
+    mrp: importNumber(row, headers, ["mrp"]),
+    gst: importNumber(row, headers, ["gst %", "gst"]),
+    hsn: importCell(row, headers, ["hsn id", "hsn"]),
+    weight: importNumber(row, headers, ["net weight (gms)", "weight"]),
+    inventory: importNumber(row, headers, ["inventory", "stock"]),
+    country: importCell(row, headers, ["country of origin", "country"]),
+    manufacturer: importCell(row, headers, ["manufacturer name", "manufacturer"]),
+    manufacturerAddress: importCell(row, headers, ["manufacturer address"]),
+    manufacturerPincode: importCell(row, headers, ["manufacturer pincode"]),
+    packer: importCell(row, headers, ["packer name", "packer"]),
+    packerAddress: importCell(row, headers, ["packer address"]),
+    packerPincode: importCell(row, headers, ["packer pincode"]),
+    importer: importCell(row, headers, ["importer name", "importer"]),
+    importerAddress: importCell(row, headers, ["importer address"]),
+    importerPincode: importCell(row, headers, ["importer pincode"]),
+    genericName: importCell(row, headers, ["generic name"]),
+    size: importCell(row, headers, ["variation", "size"]),
+    quantity: importNumber(row, headers, ["net quantity (n)", "quantity"], 1),
+    length: importNumber(row, headers, ["product length (cm)", "length"]),
+    width: importNumber(row, headers, ["product width(cm)", "width"]),
+    designName: styleId || productName,
+    designCode,
+    designNumber,
+    sku: sku || styleId,
+    version: (String(sku || styleId).match(/\.V(\d+)$/i)?.[1]) || "1",
+    image1: importCell(row, headers, ["image 1 (front)", "image 1"]),
+    image2: importCell(row, headers, ["image 2"]),
+    image3: importCell(row, headers, ["image 3"]),
+    image4: importCell(row, headers, ["image 4"]),
+    groupId: importCell(row, headers, ["group id"]) || `Imported-${designNumber}`,
+    models: compatibleModels
+      .split(/[,;|]/)
+      .map((model) => model.trim())
+      .filter(Boolean)
+      .map((model) => ({ model })),
+  });
+}
+
+router.post(
+  "/import",
+  spreadsheetUpload.single("file"),
+  async (request, response, next) => {
+    try {
+      if (!request.file?.buffer) {
+        throw badRequest('Attach the spreadsheet in a multipart field named "file".');
+      }
+
+      const workbook = XLSX.read(request.file.buffer, {
+        type: "buffer",
+        raw: false,
+      });
+
+      let imported = 0;
+      let updated = 0;
+      const errors = [];
+
+      for (const sheetName of workbook.SheetNames) {
+        /* Template reference, validation, and instruction sheets also contain
+           product-like headings. They must never become live products. */
+        if (/instruction|example|validation|return reason/i.test(sheetName)) {
+          continue;
+        }
+
+        const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], {
+          header: 1,
+          defval: "",
+          raw: false,
+          blankrows: false,
+        });
+        const headerRowIndex = rows.findIndex((row) =>
+          findImportColumn(row, ["product name", "title"]) >= 0,
+        );
+
+        if (headerRowIndex < 0) continue;
+
+        const headers = rows[headerRowIndex];
+        for (let index = headerRowIndex + 1; index < rows.length; index += 1) {
+          const row = rows[index];
+          const productName = importCell(row, headers, ["product name", "title"]);
+          if (!productName || /^tutorial link$/i.test(productName)) continue;
+
+          try {
+            const data = mapImportRow(row, headers, index + 1);
+            validateProductData(data, `Row ${index + 1}`);
+
+            const result = await Product.updateOne(
+              { sku: data.sku },
+              { $set: data },
+              { upsert: true, runValidators: true, setDefaultsOnInsert: true },
+            );
+
+            if (result.upsertedCount) imported += 1;
+            else if (result.modifiedCount) updated += 1;
+          } catch (error) {
+            errors.push({
+              sheet: sheetName,
+              row: index + 1,
+              message: error.message || "Could not import this row.",
+            });
+          }
+        }
+      }
+
+      if (!imported && !updated && !errors.length) {
+        throw badRequest("No supported product table was found in this file.");
+      }
+
+      response.status(errors.length ? 207 : 200).json({
+        success: errors.length === 0,
+        message: "Spreadsheet import finished.",
+        imported,
+        updated,
+        failed: errors.length,
+        errors: errors.slice(0, 100),
       });
     } catch (error) {
       next(error);

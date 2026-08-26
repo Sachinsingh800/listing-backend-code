@@ -13,6 +13,7 @@ npm run dev
 ```
 
 The API starts at `http://localhost:5000`. Check it at `GET /api/health`.
+Open `http://localhost:5000` in a browser for the product-import dashboard.
 
 ## Deploy to Render
 
@@ -42,6 +43,7 @@ After deployment, use `https://your-render-service.onrender.com/api` as the API 
 | `GET` | `/api/health` | API and database status |
 | `GET` | `/api/products` | List products and variants |
 | `POST` | `/api/products` | Create a product or variant |
+| `POST` | `/api/products/import` | Import or refresh products from a Meesho/legacy Excel file |
 | `POST` | `/api/products/:id/with-charm` | Copy a product into the separate charms collection |
 | `GET` | `/api/products/:id/charms` | List all charms sharing the product's Design Number |
 | `DELETE` | `/api/products/:id/charms/:charmId` | Delete a related charm without changing the product |
@@ -52,6 +54,29 @@ After deployment, use `https://your-render-service.onrender.com/api` as the API 
 | `GET` | `/api/products/:id` | Get one product |
 | `PATCH` | `/api/products/:id` | Update a product or variant |
 | `DELETE` | `/api/products/:id` | Delete a product; deleting a parent also removes its variants |
+
+## Import products from Excel
+
+Send a `multipart/form-data` request to `POST /api/products/import` with the
+spreadsheet in the `file` field. `.xlsx`, `.xls`, and `.csv` files up to 15 MB
+are supported. The importer finds the product table by its column headings, so
+it accepts both the current Meesho template and older listing files. It maps
+the product details, pricing, images, SKU, compatible model, and manufacturer
+details into MongoDB automatically.
+
+Rows are matched by SKU: a new SKU creates a product, while an already-saved
+SKU is updated. The response includes imported, updated, and failed-row totals
+plus up to 100 row errors, so a partly-invalid spreadsheet does not discard
+the valid listings.
+
+```bash
+curl -X POST http://localhost:5000/api/products/import \
+  -F "file=@listing.xlsx"
+```
+
+The same import flow is available in the dashboard. It displays every saved
+product in a searchable, paginated table with image, SKU, compatible model,
+price, MRP, stock, group, and import date.
 
 ## Create a with-charms product
 
