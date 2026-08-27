@@ -93,6 +93,12 @@ const productSchema = new mongoose.Schema(
       min: 0,
     },
 
+    wrongDefectiveReturnsPrice: {
+      type: Number,
+      default: undefined,
+      min: 0,
+    },
+
     mrp: {
       type: Number,
       default: 0,
@@ -263,7 +269,7 @@ const productSchema = new mongoose.Schema(
 
     designName: {
       type: String,
-      required: true,
+      default: undefined,
       trim: true,
     },
 
@@ -305,6 +311,13 @@ const productSchema = new mongoose.Schema(
     sku: {
       type: String,
       required: true,
+      trim: true,
+      uppercase: true,
+    },
+
+    styleId: {
+      type: String,
+      default: undefined,
       trim: true,
       uppercase: true,
     },
@@ -371,7 +384,7 @@ const productSchema = new mongoose.Schema(
 
     groupId: {
       type: String,
-      required: true,
+      default: undefined,
       trim: true,
     },
 
@@ -383,12 +396,16 @@ const productSchema = new mongoose.Schema(
 
     models: {
       type: [selectedModelSchema],
+      default: undefined,
 
       validate: {
         validator(models) {
           return (
-            Array.isArray(models) &&
-            models.length > 0
+            models === undefined ||
+            (
+              Array.isArray(models) &&
+              models.length > 0
+            )
           );
         },
 

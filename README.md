@@ -69,6 +69,29 @@ SKU is updated. The response includes imported, updated, and failed-row totals
 plus up to 100 row errors, so a partly-invalid spreadsheet does not discard
 the valid listings.
 
+SKU versions are imported as one product family. `V1` is the parent product;
+`V2`, `V3`, and later versions are attached as variants with the same Design
+Number. For a SKU such as
+`MBRO-MC-AP-IP11-UVV-CUTPNRBCT-WL-TRNSPT-268.1.V1`, the importer stores
+`UVV` as Print Type, `CUTPNRBCT` as Design Code, and `WL` as Finish. It also
+copies Generic Name to Category and Manufacturer Name to Brand. Every
+populated product field is imported, including Wrong/Defective Returns Price
+and Product ID / Style ID; Meesho's system-only error columns are ignored.
+Other blank cells remain blank instead of receiving generated values.
+
+The same upload endpoint accepts a workbook containing a `design name` sheet.
+Each row's SKU family is parsed into a Design Code and stored as a reusable
+Design library record together with its Design Name, model, collection, Design
+Number, Print Type, Finish, and reference SKU. Product imports then match their
+SKU-derived Design Code to this library and store both `designId` and
+`designName`. For example, `CUTPNRBCT` resolves to `Cute Pink Ribbon Cat`.
+Importing the design library also backfills matching products that are already
+stored in MongoDB, so the product workbook does not need to be uploaded again.
+Free-text Design Name cells in listing sheets are not trusted: the saved
+code-to-name library is the authoritative source. A product family whose
+Design Code is missing from the library is rejected with row-level errors
+instead of being stored with an empty or guessed Design Name.
+
 ```bash
 curl -X POST http://localhost:5000/api/products/import \
   -F "file=@listing.xlsx"

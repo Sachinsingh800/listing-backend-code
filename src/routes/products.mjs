@@ -6,6 +6,11 @@ import * as XLSX from "xlsx";
 import Product from "../models/Product.mjs";
 import Charm from "../models/Charm.mjs";
 import Design from "../models/Design.mjs";
+import {
+  organizeImportGroups,
+  parseWorkbookDesignReferences,
+  parseWorkbookProducts,
+} from "../services/product-import.mjs";
 
 const router = express.Router();
 
@@ -53,6 +58,7 @@ const PRODUCT_FIELDS = [
   "type",
 
   "price",
+  "wrongDefectiveReturnsPrice",
   "mrp",
   "gst",
   "hsn",
@@ -86,6 +92,7 @@ const PRODUCT_FIELDS = [
   "designNumber",
   "designId",
   "sku",
+  "styleId",
 
   "printType",
   "finish",
@@ -311,6 +318,7 @@ function normalizeProductData(data) {
     "size",
     "printType",
     "finish",
+    "styleId",
     "variantType",
   ];
 
@@ -2124,113 +2132,315 @@ router.get(
 |--------------------------------------------------------------------------
 */
 
-function cleanImportHeader(value) {
-  return String(value || "")
-    .replace(/\*/g, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
+function mergeDesignReferences(existingReferences, importedReferences) {
+  const bySkuFamily = new Map();
+
+  for (const reference of [
+    ...(existingReferences || []),
+    ...(importedReferences || []),
+  ]) {
+    const plainReference = reference?.toObject
+      ? reference.toObject()
+      : reference;
+    const key = String(plainReference?.skuFamily ?? "")
+      .trim()
+      .toUpperCase();
+
+    if (!key) continue;
+    bySkuFamily.set(key, {
+      designNumber: String(plainReference.designNumber ?? "").trim(),
+      model: String(plainReference.model ?? "").trim(),
+      collection: String(plainReference.collection ?? "").trim(),
+      skuFamily: key,
+      printType: String(plainReference.printType ?? "")
+        .trim()
+        .toUpperCase(),
+      finish: String(plainReference.finish ?? "")
+        .trim()
+        .toUpperCase(),
+      sourceSheet: String(plainReference.sourceSheet ?? "").trim(),
+      sourceRow: Number(plainReference.sourceRow) || undefined,
+    });
+  }
+
+  return [...bySkuFamily.values()].sort((first, second) =>
+    first.skuFamily.localeCompare(second.skuFamily),
+  );
 }
 
-function findImportColumn(headers, names) {
-  return headers.findIndex((header) => {
-    const normalized = cleanImportHeader(header);
+async function saveImportedDesignMappings(mappings) {
+  const counts = {
+    imported: 0,
+    updated: 0,
+    unchanged: 0,
+  };
+  const errors = [];
+  const savedDesignCodes = [];
 
-    return names.some((name) =>
-      normalized === name ||
-      normalized.startsWith(`${name} `),
+  for (const mapping of mappings) {
+    try {
+      const existingByCode = await Design.findOne({
+        designCode: mapping.designCode,
+      });
+
+      if (existingByCode) {
+        if (
+          existingByCode.designName.trim().toLocaleLowerCase() !==
+          mapping.designName.trim().toLocaleLowerCase()
+        ) {
+          throw new Error(
+            `Design Code ${mapping.designCode} is already saved as ` +
+              `"${existingByCode.designName}", not "${mapping.designName}".`,
+          );
+        }
+
+        const references = mergeDesignReferences(
+          existingByCode.references,
+          mapping.references,
+        );
+        const result = await Design.updateOne(
+          { _id: existingByCode._id },
+          {
+            $set: {
+              designName: mapping.designName,
+              references,
+            },
+          },
+          { runValidators: true },
+        );
+
+        if (result.modifiedCount) counts.updated += 1;
+        else counts.unchanged += 1;
+        savedDesignCodes.push(mapping.designCode);
+        continue;
+      }
+
+      const existingByName = await Design.findOne({
+        designName: mapping.designName,
+      }).collation({ locale: "en", strength: 2 });
+
+      if (existingByName) {
+        throw new Error(
+          `Design Name "${mapping.designName}" is already saved with ` +
+            `Design Code ${existingByName.designCode}.`,
+        );
+      }
+
+      await Design.create({
+        designName: mapping.designName,
+        designCode: mapping.designCode,
+        source: "legacy",
+        references: mergeDesignReferences([], mapping.references),
+      });
+      counts.imported += 1;
+      savedDesignCodes.push(mapping.designCode);
+    } catch (error) {
+      errors.push({
+        sheet: mapping.sheet,
+        row: mapping.rowNumber,
+        message:
+          error?.code === 11000
+            ? `Design ${mapping.designCode} conflicts with an existing design.`
+            : error.message || `Could not save Design ${mapping.designCode}.`,
+      });
+    }
+  }
+
+  return { counts, errors, savedDesignCodes };
+}
+
+async function backfillExistingProductsFromDesignMappings(designCodes) {
+  const counts = {
+    matched: 0,
+    updated: 0,
+  };
+
+  if (!designCodes.length) return counts;
+
+  const designs = await Design.find({
+    designCode: { $in: designCodes },
+  })
+    .select("_id designCode designName")
+    .lean();
+
+  for (const design of designs) {
+    const result = await Product.updateMany(
+      { designCode: design.designCode },
+      {
+        $set: {
+          designId: design._id,
+          designName: design.designName,
+        },
+      },
+      { runValidators: true },
     );
-  });
+
+    counts.matched += Number(result.matchedCount || 0);
+    counts.updated += Number(result.modifiedCount || 0);
+  }
+
+  return counts;
 }
 
-function importCell(row, headers, names) {
-  const index = findImportColumn(headers, names);
-  const value = index >= 0 ? row[index] : "";
+async function attachSavedDesignsToImportGroups(groups) {
+  const items = groups.flatMap((group) => [
+    group.parent,
+    ...group.variants,
+  ]);
+  const designCodes = [
+    ...new Set(items.map((item) => item.data.designCode).filter(Boolean)),
+  ];
 
-  return value === undefined || value === null
-    ? ""
-    : String(value).trim();
+  if (!designCodes.length) {
+    return {
+      matchedProducts: 0,
+      unmatchedDesignCodes: [],
+    };
+  }
+
+  const designs = await Design.find({
+    designCode: { $in: designCodes },
+  })
+    .select("_id designCode designName")
+    .lean();
+  const byCode = new Map(
+    designs.map((design) => [
+      design.designCode.toUpperCase(),
+      design,
+    ]),
+  );
+  let matchedProducts = 0;
+
+  for (const item of items) {
+    const design = byCode.get(item.data.designCode.toUpperCase());
+
+    if (design) {
+      item.data.designId = design._id;
+      item.data.designName = design.designName;
+      item.clearFields = item.clearFields.filter(
+        (field) => field !== "designId" && field !== "designName",
+      );
+      matchedProducts += 1;
+    } else {
+      delete item.data.designId;
+      delete item.data.designName;
+      item.clearFields = [
+        ...new Set([...item.clearFields, "designId", "designName"]),
+      ];
+    }
+  }
+
+  return {
+    matchedProducts,
+    unmatchedDesignCodes: designCodes.filter((code) => !byCode.has(code)),
+  };
 }
 
-function importNumber(row, headers, names, fallback = 0) {
-  const value = Number(importCell(row, headers, names));
+function buildImportUpdate(item, parentId) {
+  const normalized = normalizeProductData(productData(item.data));
+  const unset = Object.fromEntries(
+    item.clearFields
+      .map((field) => [field, ""]),
+  );
 
-  return Number.isFinite(value) && value >= 0
-    ? value
-    : fallback;
+  if (item.version === 1) {
+    unset.parentId = "";
+    unset.variantNumber = "";
+  } else {
+    normalized.parentId = parentId;
+    normalized.variantNumber = item.version;
+  }
+
+  return {
+    $set: normalized,
+    $unset: unset,
+  };
 }
 
-function designNumberFromSku(sku, fallback) {
-  const match = String(sku || "").match(/-(\d+)(?:\.\d+)?\.V\d+$/i);
-
-  return match?.[1] || String(fallback);
+function addWriteCount(counts, result) {
+  if (result.upsertedCount) {
+    counts.imported += 1;
+  } else if (result.modifiedCount) {
+    counts.updated += 1;
+  } else {
+    counts.unchanged += 1;
+  }
 }
 
-function designCodeFromSku(sku, fallback) {
-  const value = String(sku || "").trim();
+async function saveImportGroup(group) {
+  const session = await mongoose.startSession();
+  let counts = {
+    imported: 0,
+    updated: 0,
+    unchanged: 0,
+  };
 
-  return value
-    .replace(/-\d+(?:\.\d+)?\.V\d+$/i, "")
-    .replace(/[^a-z0-9]+/gi, "-")
-    .replace(/^-|-$/g, "")
-    .slice(-80)
-    .toUpperCase() || `IMPORT-${fallback}`;
-}
+  try {
+    await session.withTransaction(async () => {
+      const attemptCounts = {
+        imported: 0,
+        updated: 0,
+        unchanged: 0,
+      };
+      const parentUpdate = buildImportUpdate(
+        group.parent,
+        null,
+      );
+      const parentResult = await Product.updateOne(
+        {
+          sku: group.parent.data.sku,
+        },
+        parentUpdate,
+        {
+          upsert: true,
+          runValidators: true,
+          setDefaultsOnInsert: false,
+          session,
+        },
+      );
 
-function mapImportRow(row, headers, rowNumber) {
-  const sku = importCell(row, headers, ["sku id", "sku", "seller sku id"]);
-  const styleId = importCell(row, headers, ["product id / style id", "style id", "product id"]);
-  const productName = importCell(row, headers, ["product name", "title"]);
-  const compatibleModels = importCell(row, headers, ["compatible models", "compatible model", "phone model"]);
-  const designNumber = designNumberFromSku(sku || styleId, rowNumber);
-  const designCode = designCodeFromSku(styleId || sku, rowNumber);
+      addWriteCount(attemptCounts, parentResult);
 
-  return normalizeProductData({
-    productName,
-    description: importCell(row, headers, ["product description", "description"]),
-    brand: importCell(row, headers, ["brand name", "brand"]),
-    category: "Mobile Cases & Covers",
-    material: importCell(row, headers, ["material"]),
-    color: importCell(row, headers, ["color"]),
-    theme: importCell(row, headers, ["theme"]),
-    type: importCell(row, headers, ["type"]),
-    price: importNumber(row, headers, ["meesho price", "price"]),
-    mrp: importNumber(row, headers, ["mrp"]),
-    gst: importNumber(row, headers, ["gst %", "gst"]),
-    hsn: importCell(row, headers, ["hsn id", "hsn"]),
-    weight: importNumber(row, headers, ["net weight (gms)", "weight"]),
-    inventory: importNumber(row, headers, ["inventory", "stock"]),
-    country: importCell(row, headers, ["country of origin", "country"]),
-    manufacturer: importCell(row, headers, ["manufacturer name", "manufacturer"]),
-    manufacturerAddress: importCell(row, headers, ["manufacturer address"]),
-    manufacturerPincode: importCell(row, headers, ["manufacturer pincode"]),
-    packer: importCell(row, headers, ["packer name", "packer"]),
-    packerAddress: importCell(row, headers, ["packer address"]),
-    packerPincode: importCell(row, headers, ["packer pincode"]),
-    importer: importCell(row, headers, ["importer name", "importer"]),
-    importerAddress: importCell(row, headers, ["importer address"]),
-    importerPincode: importCell(row, headers, ["importer pincode"]),
-    genericName: importCell(row, headers, ["generic name"]),
-    size: importCell(row, headers, ["variation", "size"]),
-    quantity: importNumber(row, headers, ["net quantity (n)", "quantity"], 1),
-    length: importNumber(row, headers, ["product length (cm)", "length"]),
-    width: importNumber(row, headers, ["product width(cm)", "width"]),
-    designName: styleId || productName,
-    designCode,
-    designNumber,
-    sku: sku || styleId,
-    version: (String(sku || styleId).match(/\.V(\d+)$/i)?.[1]) || "1",
-    image1: importCell(row, headers, ["image 1 (front)", "image 1"]),
-    image2: importCell(row, headers, ["image 2"]),
-    image3: importCell(row, headers, ["image 3"]),
-    image4: importCell(row, headers, ["image 4"]),
-    groupId: importCell(row, headers, ["group id"]) || `Imported-${designNumber}`,
-    models: compatibleModels
-      .split(/[,;|]/)
-      .map((model) => model.trim())
-      .filter(Boolean)
-      .map((model) => ({ model })),
-  });
+      const parent = await Product.findOne({
+        sku: group.parent.data.sku,
+      })
+        .select("_id")
+        .session(session)
+        .lean();
+
+      if (!parent) {
+        throw new Error(
+          `Could not save the V1 parent for design ${group.designNumber}.`,
+        );
+      }
+
+      for (const variant of group.variants) {
+        const variantResult = await Product.updateOne(
+          {
+            sku: variant.data.sku,
+          },
+          buildImportUpdate(
+            variant,
+            parent._id,
+          ),
+          {
+            upsert: true,
+            runValidators: true,
+            setDefaultsOnInsert: false,
+            session,
+          },
+        );
+
+        addWriteCount(attemptCounts, variantResult);
+      }
+
+      counts = attemptCounts;
+    });
+
+    return counts;
+  } finally {
+    await session.endSession();
+  }
 }
 
 router.post(
@@ -2247,66 +2457,137 @@ router.post(
         raw: false,
       });
 
-      let imported = 0;
-      let updated = 0;
-      const errors = [];
-
-      for (const sheetName of workbook.SheetNames) {
-        /* Template reference, validation, and instruction sheets also contain
-           product-like headings. They must never become live products. */
-        if (/instruction|example|validation|return reason/i.test(sheetName)) {
-          continue;
-        }
-
-        const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], {
+      const sheetToRows = (sheet) =>
+        XLSX.utils.sheet_to_json(sheet, {
           header: 1,
           defval: "",
           raw: false,
-          blankrows: false,
+          blankrows: true,
         });
-        const headerRowIndex = rows.findIndex((row) =>
-          findImportColumn(row, ["product name", "title"]) >= 0,
+      const parsed = parseWorkbookProducts(
+        workbook,
+        sheetToRows,
+      );
+      const parsedDesigns = parseWorkbookDesignReferences(
+        workbook,
+        sheetToRows,
+      );
+
+      if (
+        !parsed.supportedSheetCount &&
+        !parsedDesigns.supportedSheetCount
+      ) {
+        throw badRequest(
+          "No supported product table or design-name library was found in this file.",
         );
+      }
 
-        if (headerRowIndex < 0) continue;
+      const savedDesigns = await saveImportedDesignMappings(
+        parsedDesigns.mappings,
+      );
+      const existingProductBackfill =
+        await backfillExistingProductsFromDesignMappings(
+          savedDesigns.savedDesignCodes,
+        );
+      const organized = organizeImportGroups(parsed.items);
+      const designMatches = await attachSavedDesignsToImportGroups(
+        organized.groups,
+      );
+      const counts = {
+        imported: 0,
+        updated: 0,
+        unchanged: 0,
+        parentProducts: 0,
+        variants: 0,
+      };
+      const errors = [
+        ...parsedDesigns.errors,
+        ...savedDesigns.errors,
+        ...parsed.errors,
+        ...organized.errors,
+      ];
+      const unmatchedDesignCodes = new Set(
+        designMatches.unmatchedDesignCodes,
+      );
+      const importableGroups = [];
 
-        const headers = rows[headerRowIndex];
-        for (let index = headerRowIndex + 1; index < rows.length; index += 1) {
-          const row = rows[index];
-          const productName = importCell(row, headers, ["product name", "title"]);
-          if (!productName || /^tutorial link$/i.test(productName)) continue;
+      for (const group of organized.groups) {
+        const designCode = group.parent.data.designCode;
 
-          try {
-            const data = mapImportRow(row, headers, index + 1);
-            validateProductData(data, `Row ${index + 1}`);
+        if (!unmatchedDesignCodes.has(designCode)) {
+          importableGroups.push(group);
+          continue;
+        }
 
-            const result = await Product.updateOne(
-              { sku: data.sku },
-              { $set: data },
-              { upsert: true, runValidators: true, setDefaultsOnInsert: true },
-            );
+        for (const item of [group.parent, ...group.variants]) {
+          errors.push({
+            sheet: item.sheet,
+            row: item.rowNumber,
+            message:
+              `No Design Name is saved for Design Code ${designCode}. ` +
+              "Import the design-name workbook first, then retry this product file.",
+          });
+        }
+      }
 
-            if (result.upsertedCount) imported += 1;
-            else if (result.modifiedCount) updated += 1;
-          } catch (error) {
+      for (const group of importableGroups) {
+        try {
+          const groupCounts = await saveImportGroup(group);
+
+          counts.imported += groupCounts.imported;
+          counts.updated += groupCounts.updated;
+          counts.unchanged += groupCounts.unchanged;
+          counts.parentProducts += 1;
+          counts.variants += group.variants.length;
+        } catch (error) {
+          for (const item of [group.parent, ...group.variants]) {
             errors.push({
-              sheet: sheetName,
-              row: index + 1,
-              message: error.message || "Could not import this row.",
+              sheet: item.sheet,
+              row: item.rowNumber,
+              message:
+                error.message ||
+                `Could not save design ${group.designNumber}.`,
             });
           }
         }
       }
 
-      if (!imported && !updated && !errors.length) {
-        throw badRequest("No supported product table was found in this file.");
+      if (
+        !counts.imported &&
+        !counts.updated &&
+        !counts.unchanged &&
+        !savedDesigns.counts.imported &&
+        !savedDesigns.counts.updated &&
+        !savedDesigns.counts.unchanged &&
+        !errors.length
+      ) {
+        throw badRequest("No importable product or design rows were found in this file.");
       }
+
+      const hasProducts = parsed.items.length > 0;
+      const hasDesignMappings = parsedDesigns.mappings.length > 0;
+      const message = hasProducts && hasDesignMappings
+        ? "Spreadsheet import finished. Design names were saved and matched to products by SKU."
+        : hasDesignMappings
+          ? "Design library import finished. Product uploads can now match Design Names by SKU."
+          : "Spreadsheet import finished. V1 rows are parents, V2+ rows are variants, and Design Names are matched by SKU.";
 
       response.status(errors.length ? 207 : 200).json({
         success: errors.length === 0,
-        message: "Spreadsheet import finished.",
-        imported,
-        updated,
+        message,
+        imported: counts.imported,
+        updated: counts.updated,
+        unchanged: counts.unchanged,
+        parentProducts: counts.parentProducts,
+        variants: counts.variants,
+        designsImported: savedDesigns.counts.imported,
+        designsUpdated: savedDesigns.counts.updated,
+        designsUnchanged: savedDesigns.counts.unchanged,
+        designReferences: parsedDesigns.referenceRowCount,
+        existingProductsMatched: existingProductBackfill.matched,
+        existingProductsUpdated: existingProductBackfill.updated,
+        matchedDesignProducts: designMatches.matchedProducts,
+        unmatchedDesignCodes: designMatches.unmatchedDesignCodes,
         failed: errors.length,
         errors: errors.slice(0, 100),
       });

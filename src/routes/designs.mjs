@@ -21,8 +21,8 @@ function clean(value) {
 function cleanCode(value) {
   return clean(value)
     .toUpperCase()
-    .replace(/[^A-Z]/g, "")
-    .slice(0, 8);
+    .replace(/[^A-Z0-9]/g, "")
+    .slice(0, 32);
 }
 
 function escapeRegex(value) {
@@ -54,6 +54,10 @@ function serializeDesign(
     imageMimeType:
       design.imageMimeType || "",
     source: design.source,
+    referenceCount:
+      design.references?.length || 0,
+    references:
+      design.references || [],
     category:
       clean(design.category) ||
       clean(usage.sampleCategory),
@@ -304,23 +308,20 @@ router.post(
         );
       }
 
-      const designNameWords =
-        designName.split(" ").filter(Boolean);
-
       if (
-        designNameWords.length < 2 ||
-        designNameWords.length > 3
+        designName.length < 2 ||
+        designName.length > 120
       ) {
         throw httpError(
           400,
-          "Design Name must contain 2 or 3 words.",
+          "Design Name must contain 2 to 120 characters.",
         );
       }
 
-      if (!/^[A-Z]{4,8}$/.test(designCode)) {
+      if (!/^[A-Z0-9]{3,32}$/.test(designCode)) {
         throw httpError(
           400,
-          "Design Code must contain 4 to 8 uppercase letters.",
+          "Design Code must contain 3 to 32 uppercase letters or numbers.",
         );
       }
 

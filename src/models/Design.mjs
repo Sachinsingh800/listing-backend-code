@@ -1,5 +1,56 @@
 import mongoose from "mongoose";
 
+const designReferenceSchema = new mongoose.Schema(
+  {
+    designNumber: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    model: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    collection: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    skuFamily: {
+      type: String,
+      required: true,
+      trim: true,
+      uppercase: true,
+    },
+    printType: {
+      type: String,
+      default: "",
+      trim: true,
+      uppercase: true,
+    },
+    finish: {
+      type: String,
+      default: "",
+      trim: true,
+      uppercase: true,
+    },
+    sourceSheet: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    sourceRow: {
+      type: Number,
+      min: 1,
+    },
+  },
+  {
+    _id: false,
+    strict: "throw",
+  },
+);
+
 const designSchema = new mongoose.Schema(
   {
     designName: {
@@ -73,6 +124,11 @@ const designSchema = new mongoose.Schema(
       type: String,
       enum: ["ai", "legacy", "manual"],
       default: "manual",
+    },
+
+    references: {
+      type: [designReferenceSchema],
+      default: undefined,
     },
   },
   {
