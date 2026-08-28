@@ -162,6 +162,23 @@ test("maps only populated spreadsheet cells", () => {
   assert.equal(mapped.clearFields.includes("designName"), true);
 });
 
+test("preserves a workbook model containing a comma as one exact option", () => {
+  const headers = ["Product Name", "SKU ID", "Compatible Models"];
+  const mapped = mapImportRow(
+    [
+      "Legacy cover",
+      "MBRO-MC-RDM-A4-UVV-DESIGN-WL-TRNSPT-999.1.V1",
+      "Redmi a4,Huawei y5",
+    ],
+    headers,
+    2,
+  );
+
+  assert.deepEqual(mapped.data.models, [
+    { model: "Redmi a4,Huawei y5" },
+  ]);
+});
+
 test("preserves fields whose columns do not exist in a legacy workbook", () => {
   const headers = ["Product Name", "SKU ID"];
   const mapped = mapImportRow(

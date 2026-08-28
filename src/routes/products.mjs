@@ -3350,6 +3350,19 @@ router.patch(
           ),
         );
 
+      const designIdProvided =
+        Object.hasOwn(
+          request.body || {},
+          "designId",
+        );
+
+      const detachDesign =
+        designIdProvided &&
+        !String(
+          request.body?.designId ||
+            "",
+        ).trim();
+
       /*
       |--------------------------------------------------------------------------
       | Parent
@@ -3357,11 +3370,21 @@ router.patch(
       */
 
       if (!current.parentId) {
-        data.designId =
-          data.designId ??
-          current.designId?.toString();
-
-        await applyDesignReference(data);
+        if (detachDesign) {
+          delete data.designId;
+        } else if (designIdProvided) {
+          await applyDesignReference(data);
+        } else if (current.designId) {
+          // Preserve a linked design without re-querying it for unrelated
+          // edits. This also lets legacy products remain editable if their
+          // old design-library record was removed later.
+          data.designId =
+            current.designId;
+          data.designName =
+            current.designName;
+          data.designCode =
+            current.designCode;
+        }
 
         await ensureUniqueParentProduct(
           {
@@ -3374,8 +3397,10 @@ router.patch(
               current.designCode,
 
             designId:
-              data.designId ??
-              current.designId,
+              detachDesign
+                ? undefined
+                : data.designId ??
+                  current.designId,
           },
           current._id,
         );
@@ -3467,6 +3492,9 @@ router.patch(
         delete data.parentId;
 
         delete data.variantNumber;
+
+        data.version =
+          "1";
       }
 
       /*
@@ -3480,9 +3508,13 @@ router.patch(
           current.parentId;
 
         data.variantNumber =
-          data.variantNumber ??
           current.variantNumber ??
           2;
+
+        data.version =
+          String(
+            data.variantNumber,
+          );
 
         /*
         |--------------------------------------------------------------------------
@@ -3551,10 +3583,21 @@ router.patch(
         }
       }
 
+      const updateOperation =
+        !current.parentId &&
+        detachDesign
+          ? {
+              $set: data,
+              $unset: {
+                designId: "",
+              },
+            }
+          : data;
+
       const updated =
         await Product.findByIdAndUpdate(
           request.params.id,
-          data,
+          updateOperation,
           {
             new: true,
             runValidators: true,
@@ -3567,6 +3610,54 @@ router.patch(
         );
       }
 
+      let cascadedVariantCount = 0;
+
+      if (!current.parentId) {
+        const inheritedDesign = {
+          designName:
+            updated.designName,
+          designCode:
+            updated.designCode,
+          designNumber:
+            updated.designNumber,
+        };
+
+        const variantUpdate =
+          updated.designId
+            ? {
+                $set: {
+                  ...inheritedDesign,
+                  designId:
+                    updated.designId,
+                },
+              }
+            : {
+                $set:
+                  inheritedDesign,
+                $unset: {
+                  designId: "",
+                },
+              };
+
+        const cascadeResult =
+          await Product.updateMany(
+            {
+              parentId:
+                updated._id,
+            },
+            variantUpdate,
+            {
+              runValidators: true,
+            },
+          );
+
+        cascadedVariantCount =
+          Number(
+            cascadeResult.matchedCount ||
+              0,
+          );
+      }
+
       response.json({
         success: true,
 
@@ -3577,6 +3668,18 @@ router.patch(
           serializeProductWithMeta(
             updated,
           ),
+
+        cascadedVariantCount,
+
+        inheritedFields:
+          !current.parentId
+            ? [
+                "designId",
+                "designName",
+                "designCode",
+                "designNumber",
+              ]
+            : [],
       });
     } catch (error) {
       if (
@@ -4250,6 +4353,25 @@ router.get(
 
       /*
       |--------------------------------------------------------------------------
+      | Exact Compatible Model
+      |--------------------------------------------------------------------------
+      */
+
+      const model =
+        String(
+          request.query.model ||
+            "",
+        ).trim();
+
+      if (model) {
+        filter["models.model"] =
+          exactCaseInsensitive(
+            model,
+          );
+      }
+
+      /*
+      |--------------------------------------------------------------------------
       | Parent / Variant
       |--------------------------------------------------------------------------
       */
@@ -4631,6 +4753,11 @@ router.get(
           .lean();
 
       let parent = null;
+      let rootInventory =
+        Number(
+          product.inventory ||
+            0,
+        );
 
       if (product.parentId) {
         const parentProduct =
@@ -4643,14 +4770,17 @@ router.get(
             serializeProductWithMeta(
               parentProduct,
             );
+
+          rootInventory =
+            Number(
+              parentProduct.inventory ||
+                0,
+            );
         }
       }
 
       const totalInventory =
-        Number(
-          product.inventory ||
-            0,
-        ) +
+        rootInventory +
         variants.reduce(
           (
             total,

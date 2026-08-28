@@ -6,10 +6,10 @@ const router = express.Router();
 
 const FIELDS = [
   "productName", "description", "brand", "category", "material", "color", "theme", "type",
-  "price", "mrp", "gst", "hsn", "weight", "inventory", "country", "manufacturer",
+  "price", "wrongDefectiveReturnsPrice", "mrp", "gst", "hsn", "weight", "inventory", "country", "manufacturer",
   "manufacturerAddress", "manufacturerPincode", "packer", "packerAddress", "packerPincode",
   "importer", "importerAddress", "importerPincode", "genericName", "size", "quantity",
-  "length", "width", "designName", "designCode", "designNumber", "sku", "printType",
+  "length", "width", "designName", "designCode", "designNumber", "designId", "sku", "styleId", "printType",
   "finish", "version", "image1", "image2", "image3", "image4", "groupId", "models",
 ];
 

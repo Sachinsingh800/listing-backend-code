@@ -268,11 +268,7 @@ export function mapImportRow(row, headers, rowNumber) {
   ]);
 
   if (compatibleModels !== undefined) {
-    data.models = compatibleModels
-      .split(/[,;|]/)
-      .map((model) => model.trim())
-      .filter(Boolean)
-      .map((model) => ({ model }));
+    data.models = [{ model: compatibleModels }];
   } else if (
     findImportColumn(headers, [
       "compatible models",
